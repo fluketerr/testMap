@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>ทดสอบ Longdo Map API | ไปไหม</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; font-family: "Segoe UI", "Tahoma", sans-serif; }
+
+  #app { display: flex; height: 100%; }
+
+  #panel {
+    width: 320px;
+    padding: 16px;
+    background: #f7f8fa;
+    border-right: 1px solid #ddd;
+    overflow-y: auto;
+  }
+
+  #panel h1 { font-size: 18px; margin: 0 0 4px; }
+  #panel p.sub { font-size: 12px; color: #666; margin: 0 0 16px; }
+
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #333; }
+  .field input {
+    width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px;
+  }
+
+  #suggestList {
+    border: 1px solid #ccc; border-top: none; max-height: 160px; overflow-y: auto;
+    background: white; border-radius: 0 0 6px 6px;
+  }
+  #suggestList div { padding: 6px 8px; font-size: 13px; cursor: pointer; }
+  #suggestList div:hover { background: #eef3ff; }
+
+  .step {
+    padding: 10px; border-radius: 8px; margin-bottom: 8px; font-size: 13px;
+    border: 1px solid #e0e0e0; background: white;
+  }
+  .step.active { border-color: #3d7dff; background: #eef3ff; }
+  .step b { display: block; margin-bottom: 2px; }
+  .step .coord { font-family: monospace; color: #555; }
+
+  button {
+    width: 100%; padding: 9px; border: none; border-radius: 6px; font-size: 14px;
+    background: #3d7dff; color: white; cursor: pointer; margin-top: 4px;
+  }
+  button:disabled { background: #b9c6e0; cursor: not-allowed; }
+  button.secondary { background: #e5e7eb; color: #333; }
+
+  #result {
+    margin-top: 16px; padding: 12px; border-radius: 8px; background: #eafbea;
+    border: 1px solid #b7e4b7; font-size: 13px; display: none;
+  }
+  #result.show { display: block; }
+  #result .big { font-size: 20px; font-weight: 700; color: #1a7a1a; }
+
+  #keyWarning {
+    background: #fff3cd; border: 1px solid #ffe08a; color: #7a5b00;
+    font-size: 12px; padding: 8px; border-radius: 6px; margin-bottom: 14px;
+  }
+
+  #map { flex: 1; }
+</style>
+</head>
+<body onload="init()">
+
+<div id="app">
+  <div id="panel">
+    <h1>ทดสอบ Longdo Map API</h1>
+    <p class="sub">โปรเจกต์ไปไหม — ทดลองดึงข้อมูลค้นหาสถานที่ + คำนวณระยะทาง</p>
+
+    <div id="keyWarning">
+      ⚠️ ยังไม่ได้ใส่ API Key — แก้ตรง <code>YOUR_LONGDO_API_KEY</code> ในไฟล์ก่อนใช้งาน
+      (สมัครฟรีที่ <a href="https://map.longdo.com/console" target="_blank">map.longdo.com/console</a>)
+    </div>
+
+    <div class="field">
+      <label for="searchbox">ค้นหาสถานที่ (พิมพ์อย่างน้อย 3 ตัวอักษร)</label>
+      <input id="searchbox" type="text" placeholder="เช่น มหาวิทยาลัยขอนแก่น" autocomplete="off">
+      <div id="suggestList"></div>
+    </div>
+
+    <div class="step" id="stepOrigin">
+      <b>1. จุดต้นทาง</b>
+      <span class="coord" id="originCoord">ยังไม่ได้เลือก — คลิกบนแผนที่</span>
+    </div>
+    <div class="step" id="stepDest">
+      <b>2. จุดปลายทาง</b>
+      <span class="coord" id="destCoord">ยังไม่ได้เลือก — คลิกบนแผนที่</span>
+    </div>
+
+    <button id="btnCalc" disabled>คำนวณระยะทาง (Route API)</button>
+    <button id="btnReset" class="secondary">ล้างค่าทั้งหมด</button>
+
+    <div id="result">
+      <div>ระยะทางจริงตามถนน</div>
+      <div class="big" id="resultDistance">-</div>
+      <div>เวลาโดยประมาณ: <span id="resultTime">-</span></div>
+    </div>
+
+    <div class="step" id="stepTrack" style="margin-top:16px;">
+      <b>3. Real-time Location (GPS จริง)</b>
+      <span class="coord" id="trackStatus">ยังไม่ได้เริ่ม</span>
+    </div>
+    <button id="btnTrack">เริ่มติดตามตำแหน่งจริง</button>
+    <button id="btnStopTrack" class="secondary" disabled>หยุดติดตาม</button>
+  </div>
+
+  <div id="map"></div>
+</div>
+
+<script type="text/javascript" src="https://api.longdo.com/map3/?key=YOUR_LONGDO_API_KEY"></script>
+<script>
+var map, route;
+var picking = 'origin'; // 'origin' | 'destination'
+var originLoc = null, destLoc = null;
+var originMarker = null, destMarker = null;
+var carMarker = null, routeLine = null;
+var watchId = null;
+
+function init() {
+  map = new longdo.Map({
+    placeholder: document.getElementById('map'),
+    language: 'th',
+    location: { lon: 102.8367, lat: 16.4419 }, // ขอนแก่น
+    zoom: 12
+  });
+
+  route = map.Route;
+
+  // คลิกบนแผนที่ -> เลือกจุดต้นทาง/ปลายทาง (ตรงกับขอบเขต 1.3.5.2)
+  map.Event.bind('click', function (mouseEvent) {
+    var loc = map.location(longdo.LocationMode.Pointer);
+    setPoint(loc);
+  });
+
+  setupSearch();
+  document.getElementById('btnCalc').addEventListener('click', calcRoute);
+  document.getElementById('btnReset').addEventListener('click', resetAll);
+  document.getElementById('btnTrack').addEventListener('click', startRealTracking);
+  document.getElementById('btnStopTrack').addEventListener('click', stopRealTracking);
+}
+
+function setPoint(loc) {
+  if (picking === 'origin') {
+    originLoc = loc;
+    if (originMarker) map.Overlays.remove(originMarker);
+    originMarker = new longdo.Marker(loc, { title: 'ต้นทาง', icon: { html: '<div style="background:#3d7dff;color:white;border-radius:50%;width:14px;height:14px;border:2px solid white;"></div>' } });
+    map.Overlays.add(originMarker);
+    document.getElementById('originCoord').textContent = fmt(loc);
+    document.getElementById('stepOrigin').classList.remove('active');
+    document.getElementById('stepDest').classList.add('active');
+    picking = 'destination';
+  } else {
+    destLoc = loc;
+    if (destMarker) map.Overlays.remove(destMarker);
+    destMarker = new longdo.Marker(loc, { title: 'ปลายทาง', icon: { html: '<div style="background:#e33;color:white;border-radius:50%;width:14px;height:14px;border:2px solid white;"></div>' } });
+    map.Overlays.add(destMarker);
+    document.getElementById('destCoord').textContent = fmt(loc);
+    document.getElementById('stepDest').classList.remove('active');
+    picking = 'origin';
+  }
+  document.getElementById('btnCalc').disabled = !(originLoc && destLoc);
+}
+
+function fmt(loc) {
+  return 'lat: ' + loc.lat.toFixed(6) + ', lon: ' + loc.lon.toFixed(6);
+}
+
+// ค้นหาสถานที่แบบ suggest (ตรงกับขอบเขต 1.3.5.1)
+function setupSearch() {
+  var box = document.getElementById('searchbox');
+  var list = document.getElementById('suggestList');
+  var timer = null;
+
+  box.addEventListener('keyup', function () {
+    clearTimeout(timer);
+    var value = box.value.trim();
+    if (value.length < 3) { list.innerHTML = ''; return; }
+    timer = setTimeout(function () { doSuggest(value); }, 400);
+  });
+
+  var jsonpCounter = 0;
+
+  function doSuggest(keyword) {
+    jsonpCounter++;
+    var callbackName = 'longdoSuggestCallback_' + jsonpCounter;
+    var script = document.createElement('script');
+
+    // ตั้ง timeout เผื่อ callback ไม่ถูกเรียก (เช่น key ผิด/โดเมนไม่ตรง)
+    var timeoutId = setTimeout(function () {
+      list.innerHTML = '<div style="color:#c00">ค้นหาไม่สำเร็จ — เช็ค API Key หรือ Authorized Domains</div>';
+      cleanup();
+    }, 6000);
+
+    function cleanup() {
+      clearTimeout(timeoutId);
+      delete window[callbackName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
+
+    window[callbackName] = function (msg) {
+      cleanup();
+      list.innerHTML = '';
+      if (!msg || !msg.data) return;
+      msg.data.forEach(function (place) {
+        var item = document.createElement('div');
+        item.textContent = place.name + (place.address ? ' — ' + place.address : '');
+        item.addEventListener('click', function () {
+          list.innerHTML = '';
+          box.value = place.name;
+          resolveAndSelect(place.name);
+        });
+        list.appendChild(item);
+      });
+    };
+
+    var url = 'https://search.longdo.com/mapsearch/json/suggest'
+      + '?key=YOUR_LONGDO_API_KEY'
+      + '&keyword=' + encodeURIComponent(keyword)
+      + '&callback=' + callbackName;
+    script.src = url;
+    script.onerror = function () {
+      list.innerHTML = '<div style="color:#c00">โหลดผลค้นหาไม่สำเร็จ</div>';
+      cleanup();
+    };
+    document.body.appendChild(script);
+  }
+
+  // เมื่อผู้ใช้เลือกชื่อจาก suggest แล้ว ต้องยิง search endpoint แยกอีกครั้งเพื่อขอพิกัดจริง
+  // (ตรงกับขอบเขต 1.3.5.1 ค้นหาสถานที่ — suggest ใช้แค่แสดงชื่อ, search ใช้หาพิกัด)
+  function resolveAndSelect(keyword) {
+    var callbackName = 'longdoSearchCallback_' + (++jsonpCounter);
+    var script = document.createElement('script');
+
+    var timeoutId = setTimeout(function () {
+      list.innerHTML = '<div style="color:#c00">หาพิกัดไม่สำเร็จ ลองใหม่อีกครั้ง</div>';
+      cleanup();
+    }, 6000);
+
+    function cleanup() {
+      clearTimeout(timeoutId);
+      delete window[callbackName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
+
+    window[callbackName] = function (msg) {
+      cleanup();
+      if (!msg || !msg.data || !msg.data.length) {
+        list.innerHTML = '<div style="color:#c00">ไม่พบพิกัดของสถานที่นี้</div>';
+        return;
+      }
+      var place = msg.data[0];
+      var loc = { lon: parseFloat(place.lon), lat: parseFloat(place.lat) };
+      if (isNaN(loc.lon) || isNaN(loc.lat)) {
+        list.innerHTML = '<div style="color:#c00">ข้อมูลพิกัดไม่ถูกต้อง</div>';
+        return;
+      }
+      map.location(loc, true);
+      map.zoom(15, true);
+      setPoint(loc);
+    };
+
+    var url = 'https://search.longdo.com/mapsearch/json/search'
+      + '?key=YOUR_LONGDO_API_KEY'
+      + '&keyword=' + encodeURIComponent(keyword)
+      + '&limit=1'
+      + '&callback=' + callbackName;
+    script.src = url;
+    script.onerror = function () {
+      list.innerHTML = '<div style="color:#c00">โหลดพิกัดไม่สำเร็จ</div>';
+      cleanup();
+    };
+    document.body.appendChild(script);
+  }
+}
+
+// คำนวณระยะทางจริงตามถนนด้วย Route API (ตรงกับขอบเขต 1.3.5.4)
+function calcRoute() {
+  route.clear();
+  route.mode(longdo.RouteMode.Cost); // ไปตามถนนหลักเป็นหลัก ไม่ใช้ทางลัด/ซอยเล็ก
+  route.add(originLoc);
+  route.add(destLoc);
+
+  map.Event.bind('guideComplete', function () {
+    var distanceMeters = route.distance();
+    var seconds = route.interval();
+    var km = (distanceMeters / 1000).toFixed(2);
+    var minutes = Math.round(seconds / 60);
+
+    document.getElementById('resultDistance').textContent = km + ' กม.';
+    document.getElementById('resultTime').textContent = minutes + ' นาที';
+    document.getElementById('result').classList.add('show');
+  });
+
+  route.search();
+}
+
+// Real-time Location จริง ดึงจาก GPS ของอุปกรณ์ที่เปิดหน้านี้อยู่
+// (ตรงกับขอบเขต 1.3.5.11 — ของจริงคนขับจะเป็นคนเปิดหน้านี้ระหว่างขับ
+//  แล้วส่งพิกัดนี้ขึ้น backend ให้ผู้โดยสารอีกเครื่อง subscribe ดูต่อ)
+function startRealTracking() {
+  if (!navigator.geolocation) {
+    document.getElementById('trackStatus').textContent = 'เบราว์เซอร์นี้ไม่รองรับ Geolocation';
+    return;
+  }
+
+  document.getElementById('trackStatus').textContent = 'กำลังขอสิทธิ์เข้าถึงตำแหน่ง...';
+  document.getElementById('btnTrack').disabled = true;
+
+  watchId = navigator.geolocation.watchPosition(
+    function (position) {
+      var loc = { lon: position.coords.longitude, lat: position.coords.latitude };
+      var accuracy = Math.round(position.coords.accuracy);
+
+      if (!carMarker) {
+        carMarker = new longdo.Marker(loc, {
+          title: 'ตำแหน่งปัจจุบัน',
+          icon: {
+            html: '<div style="background:#ffb020;color:white;border-radius:50%;width:20px;height:20px;border:3px solid white;box-shadow:0 0 4px rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;font-size:11px;">🚗</div>'
+          }
+        });
+        map.Overlays.add(carMarker);
+        map.location(loc, true);
+        map.zoom(16, true);
+      } else {
+        carMarker.location(loc); // อัปเดตตำแหน่งหมุดตามพิกัดใหม่ที่ได้
+      }
+
+      var now = new Date().toLocaleTimeString('th-TH');
+      document.getElementById('trackStatus').textContent =
+        'lat: ' + loc.lat.toFixed(6) + ', lon: ' + loc.lon.toFixed(6) +
+        ' (± ' + accuracy + ' ม.) — อัปเดตล่าสุด ' + now;
+
+      document.getElementById('btnStopTrack').disabled = false;
+    },
+    function (err) {
+      var msg = 'อ่านตำแหน่งไม่สำเร็จ: ';
+      if (err.code === err.PERMISSION_DENIED) msg += 'ไม่ได้รับอนุญาตให้เข้าถึงตำแหน่ง';
+      else if (err.code === err.POSITION_UNAVAILABLE) msg += 'ไม่พบสัญญาณตำแหน่ง';
+      else if (err.code === err.TIMEOUT) msg += 'หมดเวลารอสัญญาณ';
+      else msg += err.message;
+      document.getElementById('trackStatus').textContent = msg;
+      document.getElementById('btnTrack').disabled = false;
+    },
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
+  );
+}
+
+function stopRealTracking() {
+  if (watchId !== null) {
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+  document.getElementById('trackStatus').textContent = 'หยุดติดตามแล้ว';
+  document.getElementById('btnTrack').disabled = false;
+  document.getElementById('btnStopTrack').disabled = true;
+}
+
+function resetAll() {
+  originLoc = destLoc = null;
+  if (originMarker) { map.Overlays.remove(originMarker); originMarker = null; }
+  if (destMarker) { map.Overlays.remove(destMarker); destMarker = null; }
+  stopRealTracking();
+  if (carMarker) { map.Overlays.remove(carMarker); carMarker = null; }
+  route.clear();
+  picking = 'origin';
+  document.getElementById('originCoord').textContent = 'ยังไม่ได้เลือก — คลิกบนแผนที่';
+  document.getElementById('destCoord').textContent = 'ยังไม่ได้เลือก — คลิกบนแผนที่';
+  document.getElementById('stepOrigin').classList.add('active');
+  document.getElementById('stepDest').classList.remove('active');
+  document.getElementById('btnCalc').disabled = true;
+  document.getElementById('trackStatus').textContent = 'ยังไม่ได้เริ่ม';
+  document.getElementById('result').classList.remove('show');
+  document.getElementById('searchbox').value = '';
+}
+</script>
+</body>
+</html>
