@@ -119,12 +119,24 @@
     </div>
     <button id="btnTrack">เริ่มติดตามตำแหน่งจริง</button>
     <button id="btnStopTrack" class="secondary" disabled>หยุดติดตาม</button>
+
+    <div class="step" id="stepShare" style="margin-top:16px;">
+      <b>4. แชร์ตำแหน่งข้ามเครื่อง</b>
+      <span class="coord" id="shareStatus">ยังไม่ได้เชื่อมต่อ</span>
+    </div>
+    <div class="field">
+      <label for="roomCode">รหัสห้อง (ใส่รหัสเดียวกันทั้ง 2 เครื่อง)</label>
+      <input id="roomCode" type="text" placeholder="เช่น trip001" value="test001">
+    </div>
+    <button id="btnJoinDriver">เข้าห้องเป็นคนขับ (ส่งตำแหน่ง)</button>
+    <button id="btnJoinPassenger" class="secondary">เข้าห้องเป็นผู้โดยสาร (ดูตำแหน่ง)</button>
   </div>
 
   <div id="map"></div>
 </div>
 
 <script type="text/javascript" src="https://api.longdo.com/map3/?key=3ecce126f5018c358cdaee46ec78dac1"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 var map, route;
 var picking = 'origin'; // 'origin' | 'destination'
@@ -132,6 +144,14 @@ var originLoc = null, destLoc = null;
 var originMarker = null, destMarker = null;
 var carMarker = null, routeLine = null;
 var watchId = null;
+
+// --- แชร์ตำแหน่งข้ามเครื่อง ผ่าน Supabase Realtime Broadcast ---
+var SUPABASE_URL = 'https://qgetgysuwehppfeqhokt.supabase.co/rest/v1/';
+var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFnZXRneXN1d2VocHBmZXFob2t0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU3NDU5MzYsImV4cCI6MjEwMTMyMTkzNn0.BQnb9DeDKbU4J_cNSN6H5o6XQmFal52f0EwZO2Jw0Xw';
+var supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+var roomChannel = null;
+var myRole = null; // 'driver' | 'passenger'
+var remoteMarker = null;
 
 function init() {
   map = new longdo.Map({
@@ -154,6 +174,8 @@ function init() {
   document.getElementById('btnReset').addEventListener('click', resetAll);
   document.getElementById('btnTrack').addEventListener('click', startRealTracking);
   document.getElementById('btnStopTrack').addEventListener('click', stopRealTracking);
+  document.getElementById('btnJoinDriver').addEventListener('click', function () { joinRoom('driver'); });
+  document.getElementById('btnJoinPassenger').addEventListener('click', function () { joinRoom('passenger'); });
 }
 
 function setPoint(loc) {
@@ -311,6 +333,56 @@ function calcRoute() {
   route.search();
 }
 
+// เข้าห้อง Realtime ตามรหัสที่กรอก แล้วตั้งบทบาท คนขับ = ส่ง / ผู้โดยสาร = รับ
+function joinRoom(role) {
+  var code = document.getElementById('roomCode').value.trim();
+  if (!code) {
+    document.getElementById('shareStatus').textContent = 'กรุณาใส่รหัสห้องก่อน';
+    return;
+  }
+
+  if (roomChannel) supabaseClient.removeChannel(roomChannel); // ออกจากห้องเก่าก่อน ถ้ามี
+  myRole = role;
+  roomChannel = supabaseClient.channel('trip-' + code);
+
+  if (role === 'passenger') {
+    // ผู้โดยสาร: ฟังพิกัดที่คนขับส่งมา แล้วขยับหมุดตาม
+    roomChannel.on('broadcast', { event: 'location' }, function (msg) {
+      var loc = msg.payload;
+      if (!remoteMarker) {
+        remoteMarker = new longdo.Marker(loc, {
+          title: 'ตำแหน่งคนขับ',
+          icon: {
+            html: '<div style="background:#ffb020;color:white;border-radius:50%;width:20px;height:20px;border:3px solid white;box-shadow:0 0 4px rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;font-size:11px;">🚗</div>'
+          }
+        });
+        map.Overlays.add(remoteMarker);
+        map.location(loc, true);
+        map.zoom(16, true);
+      } else {
+        remoteMarker.location(loc);
+      }
+      var now = new Date().toLocaleTimeString('th-TH');
+      document.getElementById('shareStatus').textContent = 'ได้รับตำแหน่งล่าสุด ' + now;
+    });
+  }
+
+  roomChannel.subscribe(function (status) {
+    if (status === 'SUBSCRIBED') {
+      document.getElementById('shareStatus').textContent =
+        role === 'driver' ? 'เข้าห้องแล้ว — พร้อมส่งตำแหน่ง (กด "เริ่มติดตามตำแหน่งจริง" ต่อ)' : 'เข้าห้องแล้ว — รอรับตำแหน่งคนขับ...';
+    } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+      document.getElementById('shareStatus').textContent = 'เชื่อมต่อห้องไม่สำเร็จ เช็ค Supabase URL/Key';
+    }
+  });
+}
+
+function broadcastLocation(loc) {
+  if (roomChannel && myRole === 'driver') {
+    roomChannel.send({ type: 'broadcast', event: 'location', payload: loc });
+  }
+}
+
 // Real-time Location จริง ดึงจาก GPS ของอุปกรณ์ที่เปิดหน้านี้อยู่
 // (ตรงกับขอบเขต 1.3.5.11 — ของจริงคนขับจะเป็นคนเปิดหน้านี้ระหว่างขับ
 //  แล้วส่งพิกัดนี้ขึ้น backend ให้ผู้โดยสารอีกเครื่อง subscribe ดูต่อ)
@@ -347,6 +419,8 @@ function startRealTracking() {
         'lat: ' + loc.lat.toFixed(6) + ', lon: ' + loc.lon.toFixed(6) +
         ' (± ' + accuracy + ' ม.) — อัปเดตล่าสุด ' + now;
 
+      broadcastLocation(loc); // ส่งพิกัดนี้ให้ผู้โดยสารในห้องเดียวกัน (ถ้าเข้าห้องไว้แล้ว)
+
       document.getElementById('btnStopTrack').disabled = false;
     },
     function (err) {
@@ -378,6 +452,10 @@ function resetAll() {
   if (destMarker) { map.Overlays.remove(destMarker); destMarker = null; }
   stopRealTracking();
   if (carMarker) { map.Overlays.remove(carMarker); carMarker = null; }
+  if (remoteMarker) { map.Overlays.remove(remoteMarker); remoteMarker = null; }
+  if (roomChannel) { supabaseClient.removeChannel(roomChannel); roomChannel = null; }
+  myRole = null;
+  document.getElementById('shareStatus').textContent = 'ยังไม่ได้เชื่อมต่อ';
   route.clear();
   picking = 'origin';
   document.getElementById('originCoord').textContent = 'ยังไม่ได้เลือก — คลิกบนแผนที่';
