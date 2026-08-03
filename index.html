@@ -206,11 +206,11 @@ function setupSearch() {
       if (!msg || !msg.data) return;
       msg.data.forEach(function (place) {
         var item = document.createElement('div');
-        item.textContent = place.name + (place.address ? ' — ' + place.address : '');
+        item.textContent = place.d;
         item.addEventListener('click', function () {
           list.innerHTML = '';
-          box.value = place.name;
-          resolveAndSelect(place.name);
+          box.value = place.w;
+          resolveAndSelect(place.w);
         });
         list.appendChild(item);
       });
